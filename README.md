@@ -1,5 +1,9 @@
 # Mock Solidity Project for Security Testing
 
+独立 Web/API 安全测试靶场见 [web-api-mock/](./web-api-mock/README.md)。该靶场使用
+研究访问密钥和合成测试账号保护，包含明确标注的 XSS、IDOR 和 SQL 注入测试缺陷；
+不连接本仓库合约、不使用真实业务数据，不可作为生产应用部署。
+
 ## 概述
 
 这个项目包含故意设计有安全漏洞的智能合约，用于测试 ZeroDrift 安全审计工具的功能。

@@ -1,4 +1,4 @@
-"""Intentionally vulnerable, access-controlled research fixture. Never use real data."""
+"""Access-controlled security research fixture with regression fixes. Never use real data."""
 
 import hashlib
 import hmac
@@ -77,7 +77,7 @@ def create_app():
         return bool(user) and check_password_hash(user["password_hash"], password or "")
 
     def query(sql, parameters=()):
-        # A read-only connection confines the intentional SQL injection to synthetic reads.
+        # Keep security-research queries read-only against the synthetic database.
         with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as connection:
             connection.row_factory = sqlite3.Row
             return [dict(row) for row in connection.execute(sql, parameters).fetchall()]
@@ -105,7 +105,7 @@ def create_app():
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
-        response.headers["X-Research-Release"] = "vulnerable-v1"
+        response.headers["X-Research-Release"] = "fixed-v2"
         response.headers["X-Commit-SHA"] = os.environ.get("RESEARCH_COMMIT_SHA", "local-uncommitted")
         return response
 
@@ -153,7 +153,7 @@ def create_app():
 
     @app.get("/health")
     def health():
-        return jsonify(status="ok", fixture="synthetic-security-research", release="vulnerable-v1")
+        return jsonify(status="ok", fixture="synthetic-security-research", release="fixed-v2")
 
     @app.get("/scope.json")
     def scope():
@@ -179,7 +179,7 @@ def create_app():
             if path == "/api/search":
                 operation["parameters"] = [{"name": "q", "in": "query", "schema": {"type": "string"}}]
             paths[path] = {"get": operation}
-        return jsonify(openapi="3.0.3", info={"title": "Synthetic research invoice API", "version": "vulnerable-v1"},
+        return jsonify(openapi="3.0.3", info={"title": "Synthetic research invoice API", "version": "fixed-v2"},
                        security=[{"researchKey": [], "testLogin": []}], paths=paths,
                        components={"securitySchemes": {"researchKey": {"type": "apiKey", "in": "header", "name": "X-Research-Key"}, "testLogin": {"type": "http", "scheme": "basic"}}})
 
@@ -193,24 +193,21 @@ def create_app():
 
     @app.get("/search")
     def search():
-        # INTENTIONAL CWE-79: the subsequent fix must remove this unsafe HTML context.
         return page("""<h2>Customer search</h2><form action="/search">
             <label>Search <input name="q" value="{{ q }}"></label><button>Search</button></form>
-            <p>Search results for: {{ q | safe }}</p><a href="/dashboard">Dashboard</a>""", q=request.args.get("q", ""))
+            <p>Search results for: {{ q }}</p><a href="/dashboard">Dashboard</a>""", q=request.args.get("q", ""))
 
     @app.get("/api/invoices/<int:invoice_id>")
     def invoice(invoice_id):
-        # INTENTIONAL CWE-639: authentication exists, but tenant authorization is missing.
-        rows = query("SELECT * FROM invoices WHERE id = ?", (invoice_id,))
+        rows = query("SELECT * FROM invoices WHERE id = ? AND tenant = ?", (invoice_id, g.tenant))
         return (jsonify(data=rows[0]), 200) if rows else (jsonify(error="Invoice not found"), 404)
 
     @app.get("/api/search")
     def api_search():
-        # INTENTIONAL CWE-89: only this query interpolates the untrusted search term.
         term = request.args.get("q", "")
-        sql = f"SELECT * FROM invoices WHERE tenant = '{g.tenant}' AND customer LIKE '%{term}%' ORDER BY id"
+        sql = "SELECT * FROM invoices WHERE tenant = ? AND customer LIKE ? ORDER BY id"
         try:
-            return jsonify(data=query(sql))
+            return jsonify(data=query(sql, (g.tenant, f"%{term}%")))
         except sqlite3.Error:
             return jsonify(error="Invalid search query"), 400
 

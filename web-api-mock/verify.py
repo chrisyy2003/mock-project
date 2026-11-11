@@ -1,4 +1,4 @@
-"""Real-port, isolated checks of the intentionally vulnerable research baseline."""
+"""Real-port, isolated regression checks of the fixed research fixture."""
 
 import base64
 import http.cookiejar
@@ -21,7 +21,7 @@ class QuietHandler(WSGIRequestHandler):
         pass
 
 
-class BaselineChecks(unittest.TestCase):
+class RegressionChecks(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.temporary = tempfile.TemporaryDirectory()
@@ -84,28 +84,51 @@ class BaselineChecks(unittest.TestCase):
         self.assertEqual([item["id"] for item in json.loads(self.fetch(alice, "/api/invoices")[2])["data"]], [101, 102])
         self.assertEqual([item["id"] for item in json.loads(self.fetch(bob, "/api/invoices")[2])["data"]], [201, 202])
 
-    def test_intentional_idor_reads_other_tenant(self):
-        status, _, body = self.fetch(self.login(), "/api/invoices/201")
+    def test_invoice_detail_enforces_tenant_ownership(self):
+        alice = self.login()
+        bob = self.login("bob@example.invalid", "BobMock-Only-2026!")
+        self.assertEqual(self.fetch(alice, "/api/invoices/201")[0], 404)
+        self.assertEqual(self.fetch(bob, "/api/invoices/101")[0], 404)
+        self.assertEqual(self.fetch(alice, "/api/invoices/999")[0], 404)
+        status, _, body = self.fetch(alice, "/api/invoices/101")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["data"]["tenant"], "atlas")
+        status, _, body = self.fetch(bob, "/api/invoices/201")
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["data"]["tenant"], "ledger")
 
-    def test_intentional_xss_reflects_executable_html(self):
+    def test_search_escapes_html(self):
         payload = '<script>document.documentElement.dataset.researchXss="executed"</script>'
         status, headers, body = self.fetch(self.login(), "/search?" + urllib.parse.urlencode({"q": payload}))
         self.assertEqual(status, 200)
         self.assertIn("text/html", headers["Content-Type"])
-        self.assertIn("Search results for: " + payload, body)
-        self.assertNotIn("Content-Security-Policy", headers)
+        self.assertIn("Search results for: &lt;script&gt;document.documentElement.dataset.researchXss=&#34;executed&#34;&lt;/script&gt;", body)
+        self.assertNotIn(payload, body)
+        self.assertNotIn("<script>", body)
 
-    def test_intentional_sql_injection_crosses_tenant_filter(self):
+    def test_normal_search_preserves_tenant_filter(self):
+        alice = self.login()
+        bob = self.login("bob@example.invalid", "BobMock-Only-2026!")
+        for client, term, expected_ids in [
+            (alice, "Atlas", [101, 102]),
+            (alice, "", [101, 102]),
+            (alice, "Ledger", []),
+            (bob, "Ledger", [201, 202]),
+            (bob, "Atlas", []),
+        ]:
+            with self.subTest(term=term, expected_ids=expected_ids):
+                status, _, body = self.fetch(client, "/api/search?" + urllib.parse.urlencode({"q": term}))
+                self.assertEqual(status, 200)
+                self.assertEqual([item["id"] for item in json.loads(body)["data"]], expected_ids)
+
+    def test_sql_payload_is_treated_as_search_text(self):
         client = self.login()
         self.assertEqual(json.loads(self.fetch(client, "/api/search?q=missing-fixture-name")[2])["data"], [])
-        payload = "missing-fixture-name%' OR 1=1 -- "
-        status, _, body = self.fetch(client, "/api/search?" + urllib.parse.urlencode({"q": payload}))
-        self.assertEqual(status, 200)
-        data = json.loads(body)["data"]
-        self.assertEqual({item["tenant"] for item in data}, {"atlas", "ledger"})
-        self.assertEqual(len(data), 4)
+        for payload in ["missing-fixture-name%' OR 1=1 -- ", "Atlas'"]:
+            with self.subTest(payload=payload):
+                status, _, body = self.fetch(client, "/api/search?" + urllib.parse.urlencode({"q": payload}))
+                self.assertEqual(status, 200)
+                self.assertEqual(json.loads(body)["data"], [])
 
     def test_header_auth_health_scope_and_revision(self):
         credentials = base64.b64encode(b"alice@example.invalid:AliceMock-Only-2026!").decode()
@@ -113,10 +136,13 @@ class BaselineChecks(unittest.TestCase):
         client = self.client()
         status, response_headers, body = self.fetch(client, "/health", headers=headers)
         self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body)["release"], "vulnerable-v1")
+        self.assertEqual(json.loads(body)["release"], "fixed-v2")
+        self.assertEqual(response_headers["X-Research-Release"], "fixed-v2")
         self.assertEqual(response_headers["X-Commit-SHA"], "a" * 40)
         self.assertEqual(self.fetch(client, "/scope.json", headers=headers)[0], 200)
-        self.assertEqual(json.loads(self.fetch(client, "/openapi.json", headers=headers)[2])["openapi"], "3.0.3")
+        schema = json.loads(self.fetch(client, "/openapi.json", headers=headers)[2])
+        self.assertEqual(schema["openapi"], "3.0.3")
+        self.assertEqual(schema["info"]["version"], "fixed-v2")
 
     def test_logout_clears_access(self):
         client = self.login()

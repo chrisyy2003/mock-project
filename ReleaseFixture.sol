@@ -3,7 +3,6 @@ pragma solidity 0.8.13;
 
 contract ReleaseFixture {
     function answer() external pure returns (uint256) {
-        uint256 unused = 1;
         return 42;
     }
 }
